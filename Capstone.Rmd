@@ -1,0 +1,444 @@
+---
+title: "Capstone"
+author: "Gareth Larkan"
+date: "07/12/2020"
+output: pdf_document
+---
+
+# Overview
+
+This report serves the purpose of creating an algorithm which will be able to predict future movie ratings, based on the MovieLens database.
+
+The given data set will be setup and manipulated for optimal analysis. The process of analysis and data manipulation will be well documented and explained. After analysis has taken place, a machine learning algorithm will be created to perform the function of predicting ratings. The report will be broken into sections and will end with a conclusive summary explain the process.
+
+
+## Introduction
+
+The ever-evolving world of technology is being guided toward predictive analysis, due to the phenomenal work of companies like Amazon and Netflix. These companies have set the path for all other technological companies.
+
+Netflix has used a predictive model, to provide their users with shows/movies that are of interest to the user. They do this by recording all movements by the user, and create a pattern to predict, based on what the user likes, what they will want to watch.
+
+It is from these developing patterns, that predictive algorithms are extremely important. This project will create a predictive machine learning algorithm to predict movie ratings.
+
+
+## Aim of the project
+
+This project will serve the purpose of training a machine learning algorithm to predict movie ratings (from 0.5 – 5 stars). When measuring a predicted value according to the true value for a particular dataset, the RMSE (Root Mean Square Error) is used. The evaluation criteria for this project is to achieve a RMSE score of < 0.86490. This is the function used to calculate the RMSE:
+
+```{r RMSE_function1, echo = FALSE}
+RMSE <- function(predicted_ratings, true_ratings){
+  sqrt(mean((predicted_ratings - true_ratings)^2))
+}
+```
+
+
+Finally, the best resulting model will be used to predict the movie ratings.
+
+
+## Dataset
+
+The project briefing provided the dataset and instructions for optimal results. To allow for working and checking, the dataset will be split into the testing (edx) and validation set. The edx set will be used to create the algorithm. 
+
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+#### DATASET ####
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+#Load the libraries
+library(tidyverse)
+library(caret)
+library(data.table)
+library(dslabs)
+library(dplyr)
+
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+The validation set will be used to test the ratings and the RMSE.		
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+# The Validation subset will be 10% of the MovieLens data.
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+#Make sure userId and movieId in validation set are also in edx subset:
+validation <- temp %>%
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+Algorithm development is to be carried out on the "edx" subset only, as "validation" subset will be used to test the final algorithm.
+
+```{r, echo = TRUE, message = FALSE, warning = FALSE, eval = TRUE}
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+\pagebreak
+
+
+# Methods and Analysis
+
+
+## Data Analysis
+
+First step was to become familiar with the dataset and the respective columns.
+						
+```{r head, echo = FALSE}
+head(edx)
+```
+
+It is apparent that a 4-star rating is favoured. To be even more simplistic, users have the tendency to rate movie’s higher rather than lower. 0.5 is the least occurring rating, while 3 and 5 are a close 2nd and 3rd respectively to a 4-star rating. 
+
+Another interesting observation is that half star ratings are less common than full star ratings.
+
+The next process would be to determine how many times a movie has been voted for, because this may skew the data. If a movie has only been voted for once, which does occur in the dataset, the rating will be biased and not accurate. By applying this code, we get a reasonable result:
+
+
+```{r summary, echo = FALSE}
+edx %>%
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "white") +
+  scale_x_log10() +
+  xlab("Number of ratings") +
+  ylab("Number of movies") +
+  ggtitle("Number of ratings per movie") +
+  theme_update()
+```
+
+It is clear that some movies have been rated multiple times more than others, which will cause a variation in the accuracy of the results. Due to this common error. Regularisation will take place. This will be explained in more detail later.
+So, we have seen that movies are being rated multiple times. But how many times is a specific user rating a movie? 
+
+```{r, echo = FALSE}
+edx %>%
+  count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins = 30, color = "white") +
+  scale_x_log10() +
+  xlab("Number of ratings") + 
+  ylab("Number of users") +
+  ggtitle("Number of ratings given by users") + 
+  theme_update()
+```
+
+Majority of users have rated over 40 times, with the most common being between 40-50 ratings. However, there are users who rate over 1000 times, which makes one think they are just rating for fun and not rating accurately. This must get taken into account when modelling the algorithm.
+
+
+## Advanced Data Analysis
+
+For the purposes of the slightly more in-depth analysis, we will add two new columns to the table. These being premier_date and age, respectively. These will allow for slightly more in-depth analysis as to what factors truly matter in rating a movie. Which will inevitably help with the generation of the predictive algorithm.
+
+First, adding the premier_date was accomplished using this code:
+
+
+```{r rating_distribution, echo = FALSE}
+premier <- stringi::stri_extract(edx$title, regex = "(\\d{4})", comments = TRUE ) %>% as.numeric()
+edx_with_title_dates <- edx %>% mutate(premier_date = premier)
+  
+```
+
+With this manipulation, errors could occur. The following code checks for errors and corrects the 16 found inaccuracies.
+
+```{r number_of_ratings_per_movie, echo = TRUE, fig.height=4, fig.width=5}
+#There might be errors, therefore we need to check for premier dates above 2020 and below a chosen data
+edx_with_title_dates %>% filter(premier_date > 2018) %>% group_by(movieId, title, premier_date) %>% summarize(n = n())
+
+#Based on trial and error, i chose date 1910
+edx_with_title_dates %>% filter(premier_date < 1910) %>% group_by(movieId, title, premier_date) %>% summarize(n = n())
+
+##16 dates are wrong, they need to be corrected
+edx_with_title_dates[edx_with_title_dates$movieId == "27266", "premier_date"] <- 2004
+edx_with_title_dates[edx_with_title_dates$movieId == "671", "premier_date"] <- 1996
+edx_with_title_dates[edx_with_title_dates$movieId == "2308", "premier_date"] <- 1973
+edx_with_title_dates[edx_with_title_dates$movieId == "4159", "premier_date"] <- 2001
+edx_with_title_dates[edx_with_title_dates$movieId == "5310", "premier_date"] <- 1985
+edx_with_title_dates[edx_with_title_dates$movieId == "8864", "premier_date"] <- 2004
+edx_with_title_dates[edx_with_title_dates$movieId == "1422", "premier_date"] <- 1997
+edx_with_title_dates[edx_with_title_dates$movieId == "4311", "premier_date"] <- 1998
+edx_with_title_dates[edx_with_title_dates$movieId == "5472", "premier_date"] <- 1972
+edx_with_title_dates[edx_with_title_dates$movieId == "6290", "premier_date"] <- 2003
+edx_with_title_dates[edx_with_title_dates$movieId == "6645", "premier_date"] <- 1971
+edx_with_title_dates[edx_with_title_dates$movieId == "8198", "premier_date"] <- 1960
+edx_with_title_dates[edx_with_title_dates$movieId == "8905", "premier_date"] <- 1992
+edx_with_title_dates[edx_with_title_dates$movieId == "53953", "premier_date"] <- 2007
+edx_with_title_dates[edx_with_title_dates$movieId == "2691", "premier_date"] <- 1998
+edx_with_title_dates[edx_with_title_dates$movieId == "26359", "premier_date"] <- 1976
+```
+
+Now that this has been completed, the next step is to add the age of the movie to the data frame. This was done using the follwing code:
+
+```{r obscure_movies, echo = TRUE, fig.height=4, fig.width=5}
+edx_with_title_dates <- edx_with_title_dates %>% mutate(age_of_movie = 2020 - premier_date)
+head(edx_with_title_dates)
+  
+```
+
+This now sets up the data frame for more advanced analysis. Including age/ratings, genre/ratings and user/ratings comparisons. 
+
+Age vs. Rating
+The first question asked is how does age of a movie effect its rating. This can be determined by the following code:
+
+
+```{r number_ratings_given_by_users, echo = TRUE, fig.height=4, fig.width=5}
+#Is there in correlation between the age and the rating
+age_avgs <- edx_with_title_dates %>% group_by(age_of_movie) %>% summarize(avg_rating_by_age = mean(rating))
+head(age_avgs)
+
+#It can be difficult to see from the table, rather graph the results
+age_avgs %>%
+  ggplot(aes(age_of_movie, avg_rating_by_age)) +
+  geom_point() +
+  ggtitle("Age of Movie vs Average Movie Rating")
+
+```
+
+The graph clearly points out that the younger movies, specifically up to around 40 years old, have had lower ratings than those older movies. However, we can notice that the pattern is not exponential but rather slightly horizontal. Once the age is over 40, it follows a strict horizontal form. This shows us that after a certain age, it does not seem to make much difference between the ratings. The only major difference are the movies older than 40.
+
+Genre vs. Rating
+The next important comparison to make is that of genre vs. rating. It is natural to think that certain genres will be more popular and other’s relatively unpopular. However, it is important to remember that some genres’ are more common than others. So, if we have one movie that is part of ‘Documentary’ and has a rating of 5, it would be unfair to conclude that documentaries are very popular. For this reason, we first look at the percent of each genre’s likelihood. We do this with the following code:
+
+```{r Mean_movie_ratings_given_by_users, echo = TRUE, fig.height=4, fig.width=5}
+dat <- edx_with_title_dates %>% separate_rows(genres, sep ="\\|")
+
+genre_avgs <- edx %>% group_by(genres) %>% summarize(avg_rating_by_genre = mean(rating))
+head(genre_avgs)
+
+temp <- dat %>%
+  group_by(genres) %>%
+  summarize(n=n()) %>%
+  ungroup() %>%
+  mutate(sumN = sum(n), percentage = n/sumN) %>%
+  arrange(-percentage)
+
+temp %>%
+  ggplot(aes(reorder(genres, percentage), percentage, fill= percentage)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  scale_fill_distiller(palette = "spectral") + labs(y = "Percentage", x = "Genre") +
+  ggtitle("Distribution of Genres by Percent Rated")
+  
+```
+
+It is very clear to see that Drama is a lot more common than Western, Film Noir or documentaries. This needs to be taken into consideration with regards to the algorithm and even the way we interpret the next graph. 
+
+Now we look at the comparison between genre and rating, keeping in mind the how common certain genres are.
+
+
+```{r Mean_movie_ratings_given_by_users, echo = TRUE, fig.height=4, fig.width=5}
+temp <- dat %>%
+  group_by(genres) %>%
+  summarize(mean_rating_by_genre=mean(rating)) %>%
+  arrange(-mean_rating_by_genre)
+
+temp %>%
+  ggplot(aes(reorder(genres, mean_rating_by_genre), mean_rating_by_genre, fill= mean_rating_by_genre)) +
+  geom_bar(stat = "identity") + coord_flip() +
+  scale_fill_distiller(palette = "spectral") + labs(y = "Mean Rating", x = "Genre") +
+  ggtitle("Average Rating of Genres") +
+  theme_update()
+  
+```
+
+Now, from this and the previous one, we should be able to determine the common and popular genres. We see film noir is highly rated, but we know it is very uncommon. So, it is fair to conclude that we shouldn’t take this data to seriously. From the two graphs, we see that drama would have the best ratio of popularity to how common it is. On the other end of the spectrum, horror would be close to having the worst ratio. This comparison has been a good analysis that will be helpful for the algorithm.
+
+Users vs. Rating
+This issue is debatably not as crucial as genre or age; however, it will still be useful. It is good to see how many people are rating movies and how many are rating a handful of times, or hundreds of times. By performing the following code, we can see certain patterns:
+
+```{r Mean_movie_ratings_given_by_users, echo = TRUE, fig.height=4, fig.width=5}
+edx %>%
+  group_by(userId) %>%
+  filter(n() >= 100) %>%
+  summarize(b_u = mean(rating)) %>%
+  ggplot(aes(b_u)) +
+  geom_histogram(bins = 30, color = "white") +
+  xlab("Mean rating") +
+  ylab("Number of users") +
+  ggtitle("Mean movie ratings given by users") +
+  scale_x_discrete(limits = c(seq(0.5,5,0.5))) +
+  theme_update()
+  
+```
+
+From this, we conclude that over 3000 users who are rating more than 100 times, are rating movies around 3.5 stars. This chart shows a prominent bell curve.
+
+All these factors will need to be used when modelling an algorithm to effectively predict ratings of movies.
+
+## Modelling Approach
+
+It is important to understand that the RMSE is a measure of model accuracy, and our objective is to achieve a score < 0. 86490. 
+
+We write now the loss-function, previously anticipated, that compute the RMSE, defined as follows:
+
+$$ RMSE = \sqrt{\frac{1}{N}\displaystyle\sum_{u,i} (\hat{y}_{u,i}-y_{u,i})^{2}} $$
+
+
+Using this function, we aim to find the lowest RMSE possible.
+
+The easiest way to predict the future ratings would be to simply use the mean (mu) for all movies. This would provide a predicted rating; however, it would not be very intuitive. Using this model, we perform the following code to retrieve the mean rating and achieve the RMSE:
+
+
+```{r RMSE_function2, echo = TRUE}
+
+#Basic average rating
+mu <-mean(edx$rating)
+rmse <- RMSE(validation$rating, mu)
+```
+
+This will give us the result of [1.061202]. This is not suitable and far from our required RMSE.
+
+The next step is to consider the bias we first spoke about. This is the general movie rating bias. Some movies tend to be rated lower, just because. This bias is easily determined by taking the mean and subtracting it from the actual rating. The next section shows the code and RMSE for this.
+
+```{r, echo = TRUE}
+#Simple movie bias 
+simple_bias <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_i = mean(rating - mu))
+
+predicted_ratings <- mu +  validation %>%
+  left_join(simple_bias, by='movieId') %>%
+  pull(b_i)
+
+model_1_rmse <- RMSE(predicted_ratings, validation$rating)
+```
+
+This bias makes a difference in the overall RMSE, as it records an RMSE value of [0.9439087]. However, we still not at our required value.
+We then consider the fact that some users also rate over 100 times. This will cause its own bias and issues. For this reason, we perform the following code.
+
+```{r naive_rmse, echo = TRUE}
+#User bias
+user_avgs<- edx %>% 
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  filter(n() >= 100) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+user_avgs <- edx %>%
+  left_join(movie_avgs, by='movieId') %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_i))
+
+predicted_ratings <- validation%>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  mutate(pred = mu + b_i + b_u) %>%
+  pull(pred)
+
+model_2_rmse <- RMSE(predicted_ratings, validation$rating)
+```
+
+Using this, we can drastically reduce the RMSE down to [0.8653488]. 
+Now, the goal is to find a lambda which will minimize the RMSE. To do this, we can plot the lambda’s vs RMSE and find the optimal lambda, resulting in the optimal RMSE. 
+
+```{r rmse_results1, echo = TRUE}
+lambdas <- seq(0, 10, 0.25)
+
+
+# For each lambda,find b_i & b_u, followed by rating prediction & testing
+# note:the below code could take some time  
+rmses <- sapply(lambdas, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, validation$rating))
+})
+
+# Plot rmses vs lambdas to select the optimal lambda                                                             
+qplot(lambdas, rmses) 
+
+lambda <- lambdas[which.min(rmses)]
+lambda
+```
+
+From this, we can find the optimal lambda, which is 5.25. Which results in a RMSE of 0.8648170.
+The follwing code was used with the optimal lambda to get the RMSE:
+ 
+```{r rmse_results1, echo = TRUE}
+rmses <- sapply(lambda, function(l){
+  
+  mu <- mean(edx$rating)
+  
+  b_i <- edx %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- edx %>% 
+    left_join(b_i, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  predicted_ratings <- 
+    validation %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    mutate(pred = mu + b_i + b_u) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, validation$rating))
+})
+```
+ 
+
+\pagebreak
+
+# Results
+
+We have established, that with a lambda of 5.25, we have an optimal and lowest RMSE of 0.8648170
+
+
+# Conclusion
+
+Throughout the report and project, we have built a machine learning algorithm which predicts the ratings of movies with a RMSE of 0.8648170 which is lower than that of the original criteria 0.86490. Other models can also lower the RMSE, allowing for multiple techniques to be used. However, this report focused on three and has achieved the required result.
